@@ -24,6 +24,22 @@ export const css = `
   display: flex; flex-direction: column; gap: 16px;
   padding: 18px 24px 24px; overflow: auto; flex: 1; min-height: 0;
 }
+/* The piece-wide controls above the film strip, folded as one from the modal
+   header. Keeping the toggle in the header means the collapsed state costs no
+   replacement row in the space it is meant to recover. */
+.mmc-tl-setup { display: flex; flex-direction: column; gap: 16px; min-width: 0; flex: none; }
+.mmc-tl-setup[hidden] { display: none; }
+.mmc-tl-setup-toggle {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+  min-height: calc(30px * var(--mmc-type)); padding: 0 11px;
+  border: 1px solid var(--mmc-line); border-radius: 15px;
+  background: none; color: var(--mmc-dim); font: inherit;
+  font-size: calc(12px * var(--mmc-type)); cursor: pointer;
+}
+.mmc-tl-setup-toggle:hover { color: var(--mmc-text); background: var(--mmc-surface); }
+.mmc-tl-setup-toggle:focus-visible { outline: 2px solid var(--mmc-accent); outline-offset: 2px; }
+.mmc-tl-setup-arrow { width: 12px; text-align: center; font-size: calc(14px * var(--mmc-type)); line-height: 1; }
+.mmc-tl-setup-toggle + .mmc-close { margin-left: 0; }
 .mmc-tl-prompt {
   width: 100%; box-sizing: border-box; min-height: calc(84px * var(--mmc-type)); max-height: 30vh; resize: vertical;
   background: var(--mmc-surface); border: 1px solid var(--mmc-line); border-radius: 14px;

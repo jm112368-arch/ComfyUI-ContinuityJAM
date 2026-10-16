@@ -929,6 +929,59 @@ try {
   out.errors.push(`refine box: ${error.message}`);
 }
 
+// The piece-wide setup can leave the stage without taking the film strip with
+// it. This is presentation state: it survives another opening on this browser,
+// but never changes the piece the node serializes.
+try {
+  const findClass = (root, cls) => {
+    let hit = null;
+    const walk = (node) => {
+      if (!hit && String(node.className ?? "").split(" ").includes(cls)) hit = node;
+      (node.children ?? []).forEach(walk);
+    };
+    walk(root);
+    return hit;
+  };
+  localStorage.removeItem("continuity.timeline.setup-folded");
+  const node = fakeNode("MiniMaxH3Timeline", "timeline_data", JSON.stringify({
+    version: 2, prompt: "standing words", models: {},
+    segments: [{ prompt: "one", assets: [], loras: [], duration_s: 6 },
+               { prompt: "two", assets: [], loras: [], duration_s: 6 }],
+  }));
+  await ext.nodeCreated(node);
+  const { openTimeline: openTimelineModal } = await import("./web/creator/timeline.js");
+  const before = S.serializeTimeline(node.mmcBody.timeline);
+  openTimelineModal({ timeline: node.mmcBody.timeline, onCommit: () => node.mmcBody.commit() });
+  await new Promise((done) => setTimeout(done, 0));
+  const firstModal = document.body.children.at(-1);
+  const firstSetup = findClass(firstModal, "mmc-tl-setup");
+  const firstToggle = findClass(firstModal, "mmc-tl-setup-toggle");
+  const firstStrip = findClass(firstModal, "mmc-tl-strip");
+  const initiallyOpen = !firstSetup.hidden;
+  firstToggle.listeners.click[0]({});
+
+  openTimelineModal({ timeline: node.mmcBody.timeline, onCommit: () => node.mmcBody.commit() });
+  await new Promise((done) => setTimeout(done, 0));
+  const secondModal = document.body.children.at(-1);
+  const secondSetup = findClass(secondModal, "mmc-tl-setup");
+  const secondToggle = findClass(secondModal, "mmc-tl-setup-toggle");
+  const persistedClosed = secondSetup.hidden;
+  secondToggle.listeners.click[0]({});
+  out.setupFold = {
+    initiallyOpen,
+    closed: firstSetup.hidden,
+    labelClosed: firstToggle.text.trim(),
+    stripStillThere: !!firstStrip && !firstStrip.hidden,
+    storedClosed: persistedClosed,
+    reopened: !secondSetup.hidden,
+    labelOpen: secondToggle.text.trim(),
+    storedOpen: localStorage.getItem("continuity.timeline.setup-folded"),
+    pieceUntouched: before === S.serializeTimeline(node.mmcBody.timeline),
+  };
+} catch (error) {
+  out.errors.push(`setup fold: ${error.message}`);
+}
+
 // A strip with supplied footage in it, on the node and in the modal.
 //
 // A clip card is not a generation and holds none of one's machinery — no
@@ -3806,6 +3859,17 @@ check("the strip still redraws after a clip is committed", clip.get("recommitted
 for wanted in ("clip", "take-3.mp4"):
     if wanted not in (clip.get("modal") or ""):
         FAILURES.append(f"the timeline modal does not name the clip's {wanted!r}")
+
+setup_fold = report.get("setupFold", {})
+check("the timeline setup opens visible", setup_fold.get("initiallyOpen"), True)
+check("its header control folds the whole setup", setup_fold.get("closed"), True)
+check("the folded control offers the way back", setup_fold.get("labelClosed"), "⌄ Show setup")
+check("folding setup leaves the segment strip visible", setup_fold.get("stripStillThere"), True)
+check("the fold is remembered on the next timeline opening", setup_fold.get("storedClosed"), True)
+check("the same control opens it again", setup_fold.get("reopened"), True)
+check("the open control says what it will do", setup_fold.get("labelOpen"), "⌃ Hide setup")
+check("opening clears the remembered fold", setup_fold.get("storedOpen"), "0")
+check("folding setup writes nothing into the piece", setup_fold.get("pieceUntouched"), True)
 
 # The Timeline node's own rail: the Creator's two clusters, with the piece's
 # reference pool standing in for a card's attachments.

@@ -49,6 +49,17 @@ import {
  *  numbers, this read "Blend" for every LTX width. */
 const BLEND_NAMES = ["None", "Short", "Medium", "Long", "Extra long", "Longest"];
 
+// Presentation state only. The setup is substantial enough that folding it is
+// useful from one visit to the next, but it must never enter creator_data and
+// change what a workflow renders on another machine.
+const SETUP_FOLD_KEY = "continuity.timeline.setup-folded";
+let nextTimelineSetup = 0;
+
+function setupStartsOpen() {
+  try { return localStorage.getItem(SETUP_FOLD_KEY) !== "1"; }
+  catch { return true; }
+}
+
 // Functional groups, not inferred from button classes: source and blend share
 // a class but belong to the same optional group. Empty groups draw no divider.
 const seamGroup = (children) => children.length
@@ -588,6 +599,18 @@ class Timeline {
     this.poolHost.append(this.poolSection.root, this.poolWarning);
     this.castHost = el("div", { class: "mmc-tl-cast" });
     this.barHost = el("div", { class: "mmc-tl-bar" });
+    const setupId = `mmc-tl-setup-${++nextTimelineSetup}`;
+    this.setupHost = el("div", { id: setupId, class: "mmc-tl-setup" }, [
+      this.promptSection.root, this.audioHost, this.poolHost, this.castHost, this.barHost,
+    ]);
+    this.setupToggleArrow = el("span", {
+      class: "mmc-tl-setup-arrow", "aria-hidden": "true",
+    });
+    this.setupToggleLabel = el("span");
+    this.setupToggle = el("button", {
+      type: "button", class: "mmc-tl-setup-toggle", "aria-controls": setupId,
+      onclick: () => this.setSetupOpen(this.setupHost.hidden),
+    }, [this.setupToggleArrow, this.setupToggleLabel]);
     this.loraHost = el("div", { class: "mmc-tl-loras" });
     this.stripHost = el("div", { class: "mmc-tl-strip" });
     // A trackpad swipes sideways on its own; a wheel only ever sends deltaY,
@@ -610,11 +633,11 @@ class Timeline {
     this.modal = el("div", { class: "mmc-modal mmc-tl-modal" }, [
       el("div", { class: "mmc-modal-head" }, [
         el("span", { class: "mmc-tab", "aria-selected": "true", text: t("Timeline") }),
+        this.setupToggle,
         el("button", { class: "mmc-close", text: "✕", title: t("Close"), onclick: () => this.close() }),
       ]),
       el("div", { class: "mmc-tl-body" }, [
-        this.promptSection.root, this.audioHost, this.poolHost, this.castHost,
-        this.barHost, this.loraHost, this.stripHost, this.sound.host,
+        this.setupHost, this.loraHost, this.stripHost, this.sound.host,
       ]),
     ]);
 
@@ -624,10 +647,35 @@ class Timeline {
     }, [this.modal]);
 
     this.unmount = mountOverlay(this.overlay, () => this.close());
+    this.setSetupOpen(setupStartsOpen(), false);
     this.render();
     if (this.openOnMount != null && this.timeline.segments[this.openOnMount]) {
       this.edit(this.openOnMount);
       this.openOnMount = null;
+    }
+  }
+
+  /** Fold the piece-wide setup without unmounting any editor or changing the
+   *  workflow. Kept in localStorage because this is a screen-space preference,
+   *  not part of the piece somebody else should inherit. */
+  setSetupOpen(open, persist = true) {
+    const expanded = Boolean(open);
+    if (!expanded) {
+      this.promptBox?.closeMenu();
+      closeOwnedPopovers(this.setupHost);
+      // A keyboard press must not leave focus inside a subtree it just hid.
+      if (this.setupHost.contains(document.activeElement)) this.setupToggle.focus();
+    }
+    this.setupHost.hidden = !expanded;
+    this.setupToggle.setAttribute("aria-expanded", String(expanded));
+    this.setupToggleArrow.textContent = expanded ? "⌃" : "⌄";
+    this.setupToggleLabel.textContent = t(expanded ? "Hide setup" : "Show setup");
+    this.setupToggle.title = t(expanded
+      ? "Hide the piece-wide controls to give the segment strip more room."
+      : "Show the global prompt, references, cast and piece-wide controls.");
+    if (persist) {
+      try { localStorage.setItem(SETUP_FOLD_KEY, expanded ? "0" : "1"); }
+      catch { /* private mode; this visit still folds */ }
     }
   }
 
