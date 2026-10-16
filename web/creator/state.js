@@ -2332,6 +2332,10 @@ function takeFrom(report, stamp) {
     ...(report.width && report.height
       ? { width: Number(report.width), height: Number(report.height) } : {}),
     has_audio: report.has_audio !== false,
+    ...(report.latent_filename ? {
+      latent_filename: `${[report.subfolder, report.latent_filename]
+        .filter(Boolean).join("/")} [output]`,
+    } : {}),
     ...(Number.isInteger(report.seed) ? { seed: report.seed } : {}),
     stamp,
   };
@@ -3479,6 +3483,8 @@ export function parseTimeline(raw) {
             ...(Number(take.width) > 0 && Number(take.height) > 0
               ? { width: Number(take.width), height: Number(take.height) } : {}),
             has_audio: take.has_audio !== false,
+            ...(take.latent_filename
+              ? { latent_filename: String(take.latent_filename) } : {}),
             ...(Number.isInteger(take.seed) ? { seed: take.seed } : {}),
             ...(take.stamp ? { stamp: String(take.stamp) } : {}),
           };

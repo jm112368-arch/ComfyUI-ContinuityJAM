@@ -1,4 +1,9 @@
-# Continuity
+# ContinuityJAM
+
+An experimental fork of Continuity. It keeps the existing node IDs and saved
+workflow compatibility, and adds an opt-in H3 anchor-bridge renderer for
+reducing degradation between approved takes. The original frame-based renderer
+remains the default.
 
 One node for AI video and stills in ComfyUI. Write a prompt, attach media with
 `@`, press Render. Six model families, all through ComfyUI core, all local
@@ -91,31 +96,23 @@ your hardware from weights you downloaded.
 
 ```
 cd ComfyUI/custom_nodes
-git clone https://github.com/roadmaus/ComfyUI-Continuity
+git clone https://github.com/jm112368-arch/ComfyUI-ContinuityJAM
 ```
 
-That leaves one folder, `ComfyUI-Continuity`, inside `custom_nodes/`. Restart
+That leaves one folder, `ComfyUI-ContinuityJAM`, inside `custom_nodes/`. Restart
 ComfyUI. Nothing to pip install.
 
-### Already have MiniMax Creator installed
+### Already have Continuity or MiniMax Creator installed
 
-Don't clone. This pack was renamed, and GitHub redirects the old address here,
-so a pull in the folder you already have is the whole update:
+Keep only one of these packs inside `custom_nodes/`. ContinuityJAM deliberately
+keeps the existing node IDs so saved workflows continue to load; installing it
+next to the original registers those IDs twice and can make the nodes disappear.
 
-```
-cd ComfyUI/custom_nodes/ComfyUI-MiniMax-Creator
-git pull
-```
-
-The folder name doesn't matter to ComfyUI, so rename it or leave it. If it came
-from the Manager, update it there as usual.
-
-Cloning next to the old folder is what breaks. The node ids stayed the same
-through the rename so that old workflows keep loading, so two folders are two
-packs registering the same ids, and the result is no node in the search at all,
-under either name. If you already have both, delete one and restart. Your
-presets, settings, favourites and LoRA memory are in ComfyUI's `user/`
-directory, not in the pack folder.
+Stop ComfyUI, move the original `ComfyUI-Continuity` or
+`ComfyUI-MiniMax-Creator` folder somewhere outside `custom_nodes/`, clone this
+fork, then restart. Moving the old folder is safer than deleting it while this
+fork is being tested. Presets, settings, favourites and LoRA memory live under
+ComfyUI's `user/` directory, not in either pack folder.
 
 ## From a script or a coding agent
 

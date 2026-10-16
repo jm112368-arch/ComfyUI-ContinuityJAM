@@ -63,6 +63,38 @@ per-machine settings on the gear's Rendering tab act on it:
 None of this is zero yet. If you find a setting or a method that measures
 better on your strips, open an issue with the per-cut numbers.
 
+### Anchor bridge (experimental, H3)
+
+**Anchor bridge** on Settings → Rendering → Seams is an opt-in alternative for
+building between approved takes. While it is on, a compatible generated H3
+take is written with a `.latent.safetensors` sidecar beside its MP4. The sidecar
+holds the sampler's video and audio latent, so it survives a restart with the
+take instead of being reconstructed from decoded frames.
+
+The intended first workflow is deliberately small:
+
+1. Render two independent H3 anchor shots. Keep the takes you approve.
+2. Put an unheld shot between them. Give its seam from the left and the seam on
+   the right-hand kept take a blended width such as 22 frames.
+3. Render again. The middle shot reads the left take's latent tail and the right
+   take's latent head, conditions on both, then restores both overlap runs
+   exactly after sampling. The reel trims the overlaps as usual, so they are
+   transition context and are not played twice.
+
+An older take with no sidecar remains ordinary footage and uses the frame road;
+turning the setting off emits the ordinary graph. A missing sidecar also falls
+back to frames before sampling. Sidecars are only made where the sampler latent
+still describes the take on disk directly: not after face, motion, guide-LoRA,
+ReDetail, DLSS or screen passes, and not from a take whose blended edge was
+trimmed. Render anchor shots independently for this first version.
+
+This does not make one continuous latent for the whole reel. Each pass is still
+decoded and written separately, and audio keeps the existing seam path because
+its 40 Hz latent clock does not end on the same boundaries as the video feather.
+The method is marked experimental until its seam and long-strip drift are
+measured on real H3 renders; the graph, persistence and exact-overlap arithmetic
+are covered by CPU tests, not claimed as a visual benchmark.
+
 ## Motion fix
 
 H3 smears fast motion — a spinning kick, a sword arc, a whip-fast turn — into

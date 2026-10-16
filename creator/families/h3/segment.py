@@ -130,6 +130,8 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                                        "when the timeline makes one."),
                 io.Image.Input("next_image", optional=True,
                     tooltip="The opening frames of the supplied clip this segment runs into."),
+                io.Latent.Input("next_latent", optional=True,
+                    tooltip="That generated take's sampler latent, for a two-ended anchor bridge."),
                 io.Audio.Input("next_audio", optional=True,
                     tooltip="The opening of that clip's soundtrack, when this segment's sound runs into it."),
                 # The turbo lead-in's one question, asked of the node that
@@ -194,7 +196,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                 vae_name=None, audio_vae_name=None,
                 model_fl2va=None, model_ref2va=None,
                 prev_image=None, prev_audio=None,
-                next_image=None, next_audio=None, hold_lora="",
+                next_image=None, next_audio=None, next_latent=None, hold_lora="",
                 prev_latent=None, anchor_latent=None,
                 sampler_backend="", storyboard_image=None,
                 lora_loader="") -> io.NodeOutput:
@@ -320,6 +322,8 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                     f"it — shorten the blend, or use more of the clip"
                 )
             loaded[encoder.NEXT_FRAME] = {"image": next_image[:compiled.ends_feather]}
+            if next_latent is not None and compiled.ends_feather > 1:
+                loaded[encoder.NEXT_LATENT] = {"latent": next_latent["samples"]}
         if compiled.ends_on_audio:
             if next_audio is None:
                 raise ValueError(

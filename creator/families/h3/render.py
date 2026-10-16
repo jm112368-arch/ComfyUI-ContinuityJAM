@@ -817,8 +817,18 @@ class H3(base.Family):
 
     restores_seams = True
     hands_latents = True
+    anchors_latents = True
     fixes_motion = True
     finishes = True
+
+    def emit_anchor_bridge(self, graph, latent, compiled, seams):
+        inputs = {"latent": latent,
+                  "head_frames": compiled.feather if "prev_latent" in seams else 0,
+                  "tail_frames": compiled.ends_feather if "next_latent" in seams else 0}
+        for name in ("prev_latent", "next_latent"):
+            if name in seams:
+                inputs[name] = seams[name]
+        return graph.node("ContinuityH3AnchorBridge", **inputs).out(0)
 
     def finish_request(self, data, run):
         import folder_paths

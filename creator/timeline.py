@@ -52,11 +52,12 @@ and are built once for the whole chain.
 
 import json
 import logging
+import os
 
 from comfy_api.latest import io
 
 from . import (compile as compiler, guide, lora, media, mux,
-               outputs, settings, spill)
+               outputs, settings, spill, take_latents)
 
 def announce(unique_id, progress):
     """Broadcast which segment is being built, keyed to the emitting node.
@@ -443,6 +444,78 @@ class ContinuitySeamHold(io.ComfyNode):
         return io.NodeOutput({**latent, "samples": samples, "noise_mask": mask})
 
 
+class ContinuityH3AnchorBridge(io.ComfyNode):
+    """Put approved take tokens back at a sampled H3 pass's two ends.
+
+    Conditioning asks the model to arrive at both anchors; this node makes the
+    overlaps exact after sampling.  The reel trims those overlap frames, so the
+    anchors are transition context rather than duplicated delivered footage.
+    Audio is deliberately left to Continuity's existing seam path: H3 video and
+    audio use different clocks and a video feather ends between audio ticks.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="ContinuityH3AnchorBridge",
+            display_name="Continuity H3 Anchor Bridge",
+            category="Continuity/internal",
+            description="Restores exact latent overlaps at both ends of an H3 bridge.",
+            is_dev_only=True,
+            inputs=[
+                io.Latent.Input("latent"),
+                io.Int.Input("head_frames", default=0, min=0, max=100000),
+                io.Int.Input("tail_frames", default=0, min=0, max=100000),
+                io.Latent.Input("prev_latent", optional=True),
+                io.Latent.Input("next_latent", optional=True),
+            ],
+            outputs=[io.Latent.Output()],
+        )
+
+    @staticmethod
+    def _steps(frames):
+        if frames <= 1:
+            return 0
+        if frames < 5 or (frames - 5) % 17:
+            raise ValueError(f"an H3 anchor overlap must be 17n+5 frames, got {frames}")
+        return ((frames - 5) // 17) * 5 + 2
+
+    @staticmethod
+    def _video(latent):
+        samples = latent["samples"]
+        video = samples.unbind()[0] if getattr(samples, "is_nested", False) else samples
+        if getattr(video, "ndim", 0) != 5:
+            raise ValueError("an H3 take latent must have a [B,C,T,H,W] video stream")
+        return video
+
+    @classmethod
+    def execute(cls, latent, head_frames=0, tail_frames=0,
+                prev_latent=None, next_latent=None) -> io.NodeOutput:
+        import comfy.nested_tensor
+
+        samples = latent["samples"]
+        streams = list(samples.unbind()) if getattr(samples, "is_nested", False) else [samples]
+        video = streams[0].clone()
+        head = cls._steps(int(head_frames)) if prev_latent is not None else 0
+        tail = cls._steps(int(tail_frames)) if next_latent is not None else 0
+        if head + tail >= int(video.shape[2]):
+            raise ValueError("the two anchor overlaps leave no room for a bridge")
+        if head:
+            source = cls._video(prev_latent)
+            if tuple(source.shape[-2:]) != tuple(video.shape[-2:]) or source.shape[2] < head:
+                raise ValueError("the previous take latent does not fit this bridge")
+            video[:, :, :head] = source[:, :, -head:].to(video.device, video.dtype)
+        if tail:
+            source = cls._video(next_latent)
+            if tuple(source.shape[-2:]) != tuple(video.shape[-2:]) or source.shape[2] < tail:
+                raise ValueError("the next take latent does not fit this bridge")
+            video[:, :, -tail:] = source[:, :, :tail].to(video.device, video.dtype)
+        streams[0] = video
+        rebuilt = comfy.nested_tensor.NestedTensor(tuple(streams)) \
+            if len(streams) > 1 else streams[0]
+        return io.NodeOutput({**latent, "samples": rebuilt})
+
+
 class MiniMaxH3ClipReel(io.ComfyNode):
     """Supplied footage, added to the reel as a file rather than as frames.
 
@@ -708,7 +781,7 @@ class ContinuityGuideFrames(io.ComfyNode):
             crop=guide.parse_crop(crop)))
 
 
-def reported_take(part, card, filename, subfolder, fps, seed):
+def reported_take(part, card, filename, subfolder, fps, seed, latent_filename=None):
     """One take, as the strip reads it back: which card, and what the file is.
 
     The length off the pass's own frame count rather than off the file,
@@ -726,7 +799,64 @@ def reported_take(part, card, filename, subfolder, fps, seed):
         "height": int(spec["height"]),
         "has_audio": "audio_path" in spec,
         "seed": seed,
+        **({"latent_filename": latent_filename} if latent_filename else {}),
     }
+
+
+def _write_take_latent(directory, filename, latent, spec, fps):
+    """Best-effort sidecar write -> its filename, or None.
+
+    A movie is still a valid take if its optional latent cannot be stored.  The
+    bridge then takes the established frame road, which is why this deliberately
+    has the same failure boundary as take muxing rather than bringing a render
+    down after its video already exists.
+    """
+    if latent is None:
+        return None
+    latent_filename = take_latents.sidecar_name(filename)
+    try:
+        take_latents.save(
+            os.path.join(directory, latent_filename), latent,
+            frames=int(spec["frames"]), width=int(spec["width"]),
+            height=int(spec["height"]), fps=float(fps))
+    except Exception as exc:  # noqa: BLE001 - a take remains usable as frames
+        logging.warning("Continuity: could not write the latent for take %s: %s",
+                        filename, exc)
+        return None
+    return latent_filename
+
+
+class ContinuityTakeLatent(io.ComfyNode):
+    """A persisted H3 take latent, loaded for an experimental anchor bridge."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="ContinuityTakeLatent",
+            display_name="Continuity Take Latent",
+            category="Continuity/internal",
+            description="Loads a generated take's sampler latent for an anchor bridge.",
+            is_dev_only=True,
+            inputs=[
+                io.String.Input("filename"),
+                io.Vae.Input("vae", optional=True),
+            ],
+            outputs=[io.Latent.Output()],
+        )
+
+    @classmethod
+    def fingerprint_inputs(cls, filename, **kwargs):
+        try:
+            path = take_latents.resolve(filename)
+            stat = os.stat(path)
+            return filename, stat.st_mtime_ns, stat.st_size
+        except Exception:
+            return filename, None
+
+    @classmethod
+    def execute(cls, filename, vae=None) -> io.NodeOutput:
+        latent, _meta = take_latents.load(take_latents.resolve(filename), vae=vae)
+        return io.NodeOutput(latent)
 
 
 class ContinuityTake(io.ComfyNode):
@@ -773,6 +903,7 @@ class ContinuityTake(io.ComfyNode):
                              min=settings.MIN_CRF, max=settings.MAX_CRF),
                 io.Int.Input("card", default=1, min=1, max=9999),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff),
+                io.Latent.Input("latent", optional=True),
             ],
             # Never wired to anything: `core.emit.expanded` exports it so the
             # node that expanded this graph waits for the file (#97).
@@ -780,9 +911,8 @@ class ContinuityTake(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, source, fps, filename_prefix, crf, card, seed) -> io.NodeOutput:
-        import os
-
+    def execute(cls, source, fps, filename_prefix, crf, card, seed,
+                latent=None) -> io.NodeOutput:
         import folder_paths
 
         directory, name, counter, subfolder, _ = folder_paths.get_save_image_path(
@@ -796,8 +926,11 @@ class ContinuityTake(io.ComfyNode):
             logging.warning("MiniMax: could not write the take for segment "
                             "%s: %s", card, exc)
             return io.NodeOutput(True, ui={})
+        latent_filename = _write_take_latent(
+            directory, filename, latent, source, fps) if latent is not None else None
         return io.NodeOutput(True, ui={"mmc_takes": [reported_take(
-            {"pass": source}, int(card), filename, subfolder, fps, int(seed))]})
+            {"pass": source}, int(card), filename, subfolder, fps, int(seed),
+            latent_filename)]})
 
 
 class MiniMaxH3Save(io.ComfyNode):
@@ -844,6 +977,9 @@ class MiniMaxH3Save(io.ComfyNode):
                 # Which card each part of the reel is and what seed it ran on,
                 # or empty on a render with nothing to keep. See `_takes`.
                 io.String.Input("takes", default="", optional=True),
+                # Present only for an opt-in, compatible one-pass H3 render.
+                # Older expanded graphs and every other family leave it absent.
+                io.Latent.Input("take_latent", optional=True),
             ],
             # Never wired to anything: `core.emit.expanded` exports it so the
             # node that expanded this graph waits for the file (#97).
@@ -853,7 +989,7 @@ class MiniMaxH3Save(io.ComfyNode):
 
     @classmethod
     def execute(cls, reel, fps, filename_prefix,
-                crf=settings.DEFAULT_CRF, takes="") -> io.NodeOutput:
+                crf=settings.DEFAULT_CRF, takes="", take_latent=None) -> io.NodeOutput:
         import os
 
         import folder_paths
@@ -892,13 +1028,15 @@ class MiniMaxH3Save(io.ComfyNode):
             {"filename": filename, "subfolder": subfolder, "type": "output"},
         ]}
         kept = cls._takes(reel, takes, filename_prefix, fps, crf,
-                          piece=(filename, subfolder))
+                          piece=(filename, subfolder), take_latent=take_latent,
+                          piece_directory=directory)
         if kept:
             report["mmc_takes"] = kept
         return io.NodeOutput(True, ui=report)
 
     @classmethod
-    def _takes(cls, reel, takes, filename_prefix, fps, crf, piece=None):
+    def _takes(cls, reel, takes, filename_prefix, fps, crf, piece=None,
+               take_latent=None, piece_directory=None):
         """Every generated pass, written out again as a file of its own.
 
         What a take is for: a piece is built a pass at a time, and a card whose
@@ -949,8 +1087,11 @@ class MiniMaxH3Save(io.ComfyNode):
         # The render as its own take — see the docstring. Nothing is written and
         # nothing can fail, so this is above the shelf the others are written to.
         if piece and len(reel) == 1:
+            latent_filename = _write_take_latent(
+                piece_directory, piece[0], take_latent, reel[0]["pass"], fps
+            ) if take_latent is not None and piece_directory else None
             return [cls._reported(reel[0], int(cards[wanted[0]]), piece[0], piece[1],
-                                  fps, seed_of(wanted[0]))]
+                                  fps, seed_of(wanted[0]), latent_filename)]
 
         # One counter for the whole render, so a piece's takes sort together
         # and read as the set they are.
@@ -984,6 +1125,6 @@ class MiniMaxH3Save(io.ComfyNode):
 NODES = [ContinuityStoryboard, MiniMaxH3Reel,
          MiniMaxH3PassFrames, MiniMaxH3PassAudio,
          MiniMaxH3ClipReel, MiniMaxH3ClipFrames, MiniMaxH3ClipAudio,
-         ContinuitySeamHold,
+         ContinuitySeamHold, ContinuityH3AnchorBridge,
          ContinuityGuideFrames,
-         ContinuityTake, MiniMaxH3Save]
+         ContinuityTakeLatent, ContinuityTake, MiniMaxH3Save]

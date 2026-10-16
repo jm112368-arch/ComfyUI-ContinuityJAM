@@ -57,11 +57,12 @@ and frozen for it.
 """
 
 import json
+import logging
 
 from comfy_api.latest import io
 from comfy_execution.graph_utils import GraphBuilder
 
-from .. import canvas, guide as guides, media, outputs, settings
+from .. import canvas, guide as guides, media, outputs, settings, take_latents
 
 PASS_FRAMES_NODE = "MiniMaxH3PassFrames"
 PASS_AUDIO_NODE = "MiniMaxH3PassAudio"
@@ -71,6 +72,7 @@ CLIP_FRAMES_NODE = "MiniMaxH3ClipFrames"
 CLIP_AUDIO_NODE = "MiniMaxH3ClipAudio"
 SAVE_NODE = "MiniMaxH3Save"
 TAKE_NODE = "ContinuityTake"
+TAKE_LATENT_NODE = "ContinuityTakeLatent"
 STORYBOARD_NODE = "ContinuityStoryboard"
 IMAGE_SAVE_NODE = "MiniMaxH3SaveImage"
 
@@ -174,6 +176,36 @@ def is_clip_source(source):
     point at.
     """
     return source[0] == "clip"
+
+
+def take_latent(graph, spec, vae, cache=None):
+    """A compatible kept take's latent link, or None for the frame fallback."""
+    filename = str(spec.get("latent_filename") or "").strip()
+    if not filename:
+        return None
+    if cache is not None and filename in cache:
+        return cache[filename]
+    try:
+        path = take_latents.resolve(filename)
+        meta = take_latents.header(path)
+        expected = (int(spec.get("width") or 0), int(spec.get("height") or 0))
+        stored = (int(meta["width"]), int(meta["height"]))
+        full_seconds = int(meta["frames"]) / float(meta["fps"])
+        if expected != stored:
+            raise ValueError(f"its canvas is {stored[0]}x{stored[1]}, not "
+                             f"{expected[0]}x{expected[1]}")
+        if float(spec.get("start") or 0) != 0 or spec.get("crop"):
+            raise ValueError("the approved take has been trimmed or cropped")
+        if abs(float(spec.get("duration") or 0) - full_seconds) > 1 / float(meta["fps"]):
+            raise ValueError("the approved take's duration no longer matches its latent")
+    except Exception as exc:  # noqa: BLE001 - the MP4 remains a valid fallback
+        logging.warning("Continuity: anchor latent unavailable for %s: %s",
+                        spec.get("filename"), exc)
+        return None
+    link = graph.node(TAKE_LATENT_NODE, filename=filename, vae=vae).out(0)
+    if cache is not None:
+        cache[filename] = link
+    return link
 
 
 def inherited_frames(graph, source, feather):
@@ -389,6 +421,10 @@ def emit(family, payloads, labels, weights, sampling, acceleration, unique_id,
                             # defaults to the previous one but may name any
                             # earlier one via `continue_from`
     handing = settings.seam_handoff()
+    bridging = settings.anchor_bridge() and family.anchors_latents
+    take_latent_links = {}
+    sidecars = bridging and not any((redetailing, refining, finishing, screening))
+    single_take_latent = None
     anchor = None           # the first generated pass's latent, the tone every
                             # levelled seam is pulled back to
 
@@ -405,7 +441,9 @@ def emit(family, payloads, labels, weights, sampling, acceleration, unique_id,
             if spec.get("sound") or spec.get("mix"):
                 clip_inputs["audio_vae"] = links.audio_vae
             reel = graph.node(CLIP_NODE, **clip_inputs).out(0)
-            decoded.append(("clip", spec, None))
+            clip_latent = take_latent(graph, spec, links.vae, take_latent_links) \
+                if bridging else None
+            decoded.append(("clip", spec, clip_latent))
             continue
 
         # The seams, wired here because they are the loop's own bookkeeping —
@@ -493,6 +531,10 @@ def emit(family, payloads, labels, weights, sampling, acceleration, unique_id,
                 seams["next_image"] = graph.node(
                     CLIP_FRAMES_NODE, clip_data=json.dumps(ahead, sort_keys=True),
                     count=one.ends_feather, at="head").out(0)
+                if bridging:
+                    following = take_latent(graph, ahead, links.vae, take_latent_links)
+                    if following is not None:
+                        seams["next_latent"] = following
             if one.ends_on_audio:
                 seams["next_audio"] = graph.node(
                     CLIP_AUDIO_NODE, clip_data=json.dumps(ahead, sort_keys=True),
@@ -529,6 +571,21 @@ def emit(family, payloads, labels, weights, sampling, acceleration, unique_id,
             latent = family.emit_refine(graph, links, segment, payloads[index],
                                         one, weights, seams, latent, sampling,
                                         acceleration, seed_for(index), run)
+
+        if bridging and any(name in seams for name in ("prev_latent", "next_latent")):
+            latent = family.emit_anchor_bridge(graph, latent, one, seams)
+
+        # Sidecars are deliberately limited to latents that describe the take
+        # on disk directly. A face/motion/finishing pass rewrites pixels after
+        # sampling, and a blended edge trims an overlap out of the movie; either
+        # would make the sidecar's clock disagree with the approved take.
+        take_anchor_latent = latent if (
+            sidecars and not one.face
+            and not (one.motion_fix and family.fixes_motion)
+            and one.feather <= 1 and one.ends_feather <= 1
+        ) else None
+        if len(payloads) == 1:
+            single_take_latent = take_anchor_latent
 
         # Decoded, trimmed, written to disk and added to the reel, all in the
         # one node. The decode is not a node of its own because a node's output
@@ -600,7 +657,9 @@ def emit(family, payloads, labels, weights, sampling, acceleration, unique_id,
                               fps=float(family.rules.fps),
                               filename_prefix=filename_prefix,
                               crf=settings.video_crf(),
-                              card=int(cards[index]), seed=seed_for(index))
+                              card=int(cards[index]), seed=seed_for(index),
+                              **({"latent": take_anchor_latent}
+                                 if take_anchor_latent is not None else {}))
             take.set_override_display_id(unique_id)
 
     # The re-detail pass, on the finished reel. After the loop and not inside it,
@@ -667,11 +726,11 @@ def emit(family, payloads, labels, weights, sampling, acceleration, unique_id,
                         "seeds": [seed_for(index) for index in range(len(payloads))]},
                        sort_keys=True) if cards and not per_pass_takes else ""
     emit_tail(graph, reel, unique_id, filename_prefix, takes,
-              fps=float(family.rules.fps))
+              fps=float(family.rules.fps), take_latent=single_take_latent)
     return graph
 
 
-def emit_tail(graph, reel, unique_id, filename_prefix, takes, fps):
+def emit_tail(graph, reel, unique_id, filename_prefix, takes, fps, take_latent=None):
     """Write the reel to a file, and report it against `unique_id`.
 
     An AV family generates picture and sound together and they should leave
@@ -704,7 +763,9 @@ def emit_tail(graph, reel, unique_id, filename_prefix, takes, fps):
     """
     save = graph.node(SAVE_NODE, reel=reel,
                       fps=float(fps), filename_prefix=filename_prefix,
-                      crf=settings.video_crf(), takes=takes)
+                      crf=settings.video_crf(), takes=takes,
+                      **({"take_latent": take_latent}
+                         if take_latent is not None else {}))
     save.set_override_display_id(unique_id)
     return save
 

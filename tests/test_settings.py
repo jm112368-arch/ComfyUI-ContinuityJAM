@@ -139,6 +139,12 @@ check("a null is the default", settings.clean({"seam_handoff": None})["seam_hand
 refuses("a road that does not exist", {"seam_handoff": "pixels"}, "one of")
 refuses("the old boolean", {"seam_handoff": True}, "one of")
 
+check("anchor bridges are opt-in", settings.clean({})["anchor_bridge"], False)
+check("anchor bridges can be enabled",
+      settings.clean({"anchor_bridge": True})["anchor_bridge"], True)
+refuses("an anchor bridge switch that is not a boolean",
+        {"anchor_bridge": 1}, "true or false")
+
 check("the LoRA loader is the vendored stack by default", settings.clean({})["lora_loader"], "vendored")
 check("...and either loader is accepted",
       [settings.clean({"lora_loader": which})["lora_loader"] for which in settings.LORA_LOADERS],

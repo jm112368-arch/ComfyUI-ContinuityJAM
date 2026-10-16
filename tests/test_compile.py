@@ -2136,6 +2136,28 @@ rendered = compiler.rendered_piece(kept_seam)
 check("a kept card's own incoming seam is dropped",
       [rendered["segments"][1].get(key) for key in ("continue", "feather")], [None, None])
 
+# The experimental road preserves that seam only for a take with a generated
+# latent beside it, so it can be the right-hand anchor of the pass before it.
+latent_take = take(latent_filename="minimax/renders/takes/H3_00001_s01.latent.safetensors")
+bridged = compiler.rendered_piece(
+    strip(shot("one"), shot("two", hold=True, take=latent_take,
+                            **{"continue": True, "feather": 22})),
+    anchor_bridge=True)
+check("a latent-backed kept take can remain a bridge's right anchor",
+      [bridged["segments"][1].get(key)
+       for key in ("continue", "feather", "latent_filename")],
+      [True, 22, latent_take["latent_filename"]])
+check("the bridge anchor reaches the clip payload",
+      compiler.timeline_payloads(bridged, image_size_lookup=_look)[1]["clip"]["latent_filename"],
+      latent_take["latent_filename"])
+no_latent = compiler.rendered_piece(
+    strip(shot("one"), shot("two", hold=True, take=take(),
+                            **{"continue": True, "feather": 22})),
+    anchor_bridge=True)
+check("the experimental road does not reinterpret an old take",
+      [no_latent["segments"][1].get(key) for key in ("continue", "feather")],
+      [None, None])
+
 # Holds belong to the pass: a merged run is one take, spliced once.
 merged = strip(shot("one", hold=True, take=take(seconds=12.0)),
                shot("two", merge=True, hold=True, take=take()),

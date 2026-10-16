@@ -450,6 +450,16 @@ const SEAM_HANDOFFS = [
         + "a turbo lead-in. Picture only; the sound crosses the seam as before." },
 ];
 
+const ANCHOR_BRIDGE = [
+  { value: false, label: "Off",
+    note: "Continuity's normal chained renderer. Kept takes are ordinary video files, "
+        + "and seams off them use decoded frames." },
+  { value: true, label: "Experimental",
+    note: "Keeps compatible H3 sampler latents beside new takes. When an unheld shot "
+        + "sits between latent-backed held takes, blended seams condition on both "
+        + "anchors and restore their exact overlap tokens after sampling." },
+];
+
 const PLAYBACK = [
   { value: true, label: "Plays itself",
     note: "What the stage has always done: the clip loops silently as soon as it "
@@ -798,6 +808,7 @@ class SettingsPage {
   seamsCard() {
     const handoff = this.settings.seam_handoff || "latent";
     const leadIn = Number(this.settings.turbo_lead_in) || 0;
+    const bridge = this.settings.anchor_bridge === true;
     const rows = [this.row({
       key: "seam_handoff",
       name: "Seam handoff",
@@ -813,6 +824,19 @@ class SettingsPage {
         apply: (value) => this.set({ seam_handoff: value }),
       }),
     })];
+    rows.push(this.row({
+      key: "anchor_bridge",
+      name: "Anchor bridge",
+      hint: "Render between approved H3 takes without a latent round trip.",
+      ...this.segment({
+        options: ANCHOR_BRIDGE,
+        value: bridge,
+        also: "New takes receive a .latent.safetensors sidecar only when their sampler "
+            + "latent directly matches the movie. Existing takes without one continue "
+            + "to use frames. This is H3-only and deliberately opt-in while it is measured.",
+        apply: (value) => this.set({ anchor_bridge: value }),
+      }),
+    }));
     if (this.settings.advanced === true || leadIn > 0) {
       rows.push(this.row({
         key: "turbo_lead_in",

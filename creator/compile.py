@@ -2160,6 +2160,13 @@ def clip_spec(segment, index):
             # is a deliberate choice — scoring a shot from elsewhere — and is
             # the only state written to the blob.
             "sound": segment.get("sound") is not False}
+    # A held generated take can carry its sampler latent beside the movie.
+    # Ordinary clips never do. Keeping the pointer on the clip spec lets the
+    # emitter opt into latent anchoring without teaching the rest of the
+    # compiler a second kind of footage.
+    latent_filename = str(segment.get("latent_filename") or "").strip()
+    if latent_filename:
+        spec["latent_filename"] = latent_filename
     # What the UI probed: the file's own pixel size, which is what lets the
     # aspect come off the clip without this module opening it. Absent in a
     # hand-written blob, where the ratio pill decides exactly as it always did.
@@ -2299,6 +2306,9 @@ def take_spec(segment, index):
             "duration_s": seconds,
             "sound": take.get("has_audio") is not False,
             "has_audio": take.get("has_audio") is not False}
+    latent_filename = str(take.get("latent_filename") or "").strip()
+    if latent_filename:
+        card["latent_filename"] = latent_filename
     for key in ("width", "height"):
         try:
             value = int(take[key])
@@ -2333,7 +2343,7 @@ def segment_seed(segment, index):
     return seed
 
 
-def rendered_piece(data):
+def rendered_piece(data, anchor_bridge=False):
     """The piece as the next render will make it: holds resolved, takes spliced.
 
     Two rewrites, run by run, both of them the strip's own state said in the one
@@ -2393,7 +2403,18 @@ def rendered_piece(data):
         if is_kept(head):
             for index in range(start, end):
                 place[index] = len(rendered)
-            rendered.append({**take_spec(head, start), "card_no": start + 1})
+            take = take_spec(head, start)
+            # Ordinarily a kept take is inert footage and its incoming seam is
+            # dropped. In the experimental bridge road a latent-backed take can
+            # also be the approved right-hand anchor: preserving its seam lets
+            # `_stamp_clip_seams` put that anchor on the generated pass before
+            # it. No sidecar means the established inert-clip rule remains.
+            if anchor_bridge and take.get("latent_filename") and head.get("continue"):
+                take["continue"] = True
+                for key in ("feather", "feather_pin"):
+                    if key in head:
+                        take[key] = head[key]
+            rendered.append({**take, "card_no": start + 1})
         # ...and a held pass with no take is not in this render at all.
 
     if not rendered:

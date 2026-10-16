@@ -6,6 +6,14 @@ exactly as it was written, wall of text and all.
 
 ## Unreleased
 
+**Experimental H3 anchor bridges between approved takes.** The opt-in setting
+keeps compatible generated-take latents as atomic safetensors sidecars, carries
+their paths with held takes, conditions a new pass on both a previous latent
+tail and a following latent head, and restores both overlap runs exactly after
+sampling. Existing takes and the switch-off graph keep the frame path. This
+first version intentionally excludes post-processed or overlap-trimmed takes
+whose saved movie no longer aligns directly with the sampler latent.
+
 **Screens: a picture or clip put on a phone, tablet, laptop or TV in the shot,
 with its text as sharp as the file.** A shot can carry up to two screens, each
 a device and a file, and a handle the prompt cites it by where the screen is

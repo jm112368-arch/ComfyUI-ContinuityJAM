@@ -193,6 +193,7 @@ def _fingerprint(blob):
     until something else about the render moved.
     """
     graph_settings = (settings.seam_handoff(), settings.turbo_lead_in(),
+                      settings.anchor_bridge(),
                       settings.lora_loader(),
                       tuple(sorted(settings.screen_tracker().items())),
                       settings.screen_debug())
@@ -270,7 +271,7 @@ def _render(blob, seed, steps, cfg, sampler_name, scheduler,
     # spliced from the file it already has. `rendered_piece` hands back the blob
     # itself when neither is in play, so a strip that never touched any of this
     # compiles to exactly what it always did.
-    piece = compiler.rendered_piece(data)
+    piece = compiler.rendered_piece(data, anchor_bridge=settings.anchor_bridge())
     _footage_on_disk(piece, data)
     piece = compiler.varied_piece(piece, seed)
     # The run's context is read off `data` below, for the reason given there;

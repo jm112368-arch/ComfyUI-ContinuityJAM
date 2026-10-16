@@ -1309,6 +1309,92 @@ check("the card being shot is announced by its number on the strip",
       json.loads(stepped["MiniMaxH3TimelineSegment"][0][1]["segment_data"])["progress"],
       {"index": 2})
 
+# Experimental anchor bridges: two approved H3 takes with sidecars flank one
+# unheld shot. The middle pass receives both latent anchors and a post-sampler
+# node restores both overlap runs exactly. With the switch off, the same strip
+# remains the established frame-only graph.
+_latent_take = {**TAKE,
+                "width": 1344, "height": 768,
+                "latent_filename": "minimax/renders/takes/H3_00001_s01.latent.safetensors"}
+_bridge_blob = blob(segments=[
+    {"prompt": "approved left", "duration_s": 5, "hold": True,
+     "take": dict(_latent_take)},
+    {"prompt": "make the bridge", "duration_s": 5,
+     "continue": True, "feather": 22},
+    {"prompt": "approved right", "duration_s": 5, "hold": True,
+     "take": {**_latent_take,
+              "filename": "minimax/renders/takes/H3_00002_s03.mp4",
+              "latent_filename": "minimax/renders/takes/H3_00002_s03.latent.safetensors"},
+     "continue": True, "feather": 22},
+])
+_settings = importlib.import_module(f"{PACKAGE}.creator.settings")
+_take_latents = importlib.import_module(f"{PACKAGE}.creator.take_latents")
+_was_bridge = _settings.anchor_bridge
+_was_resolve = _take_latents.resolve
+_was_header = _take_latents.header
+_settings.anchor_bridge = lambda: True
+_take_latents.resolve = lambda filename: f"/output/{filename}"
+_take_latents.header = lambda path: {
+    "schema": 1, "family": "h3", "frames": 120,
+    "width": 1344, "height": 768, "fps": 24.0,
+}
+try:
+    _anchor_solo = grouped(build(blob(segments=[
+        {"prompt": "independent anchor", "duration_s": 5},
+    ])).expand)
+    _anchor_pair = grouped(build(blob(segments=[
+        {"prompt": "independent one", "duration_s": 5},
+        {"prompt": "independent two", "duration_s": 5},
+    ])).expand)
+    _bridge_graph = grouped(build(_bridge_blob).expand)
+finally:
+    _settings.anchor_bridge = _was_bridge
+    _take_latents.resolve = _was_resolve
+    _take_latents.header = _was_header
+check("an independent one-pass anchor is saved with its latent",
+      "take_latent" in _anchor_solo["MiniMaxH3Save"][0][1], True)
+check("independent passes save latent-backed takes as they land",
+      ["latent" in inputs for _, inputs in _anchor_pair["ContinuityTake"]],
+      [True, True])
+check("an anchor bridge loads both approved take latents",
+      len(_bridge_graph["ContinuityTakeLatent"]), 2)
+check("an anchor bridge has one exact-overlap node",
+      len(_bridge_graph["ContinuityH3AnchorBridge"]), 1)
+_bridge_segment = _bridge_graph["MiniMaxH3TimelineSegment"][0][1]
+check("the bridge segment is conditioned on both take latents",
+      ("prev_latent" in _bridge_segment, "next_latent" in _bridge_segment),
+      (True, True))
+_exact = _bridge_graph["ContinuityH3AnchorBridge"][0][1]
+check("the exact overlaps use the seam widths on both ends",
+      (_exact["head_frames"], _exact["tail_frames"]), (22, 22))
+
+_settings.anchor_bridge = lambda: False
+try:
+    _ordinary_graph = grouped(build(_bridge_blob).expand)
+finally:
+    _settings.anchor_bridge = _was_bridge
+check("the opt-out graph loads no take latent",
+      len(_ordinary_graph.get("ContinuityTakeLatent", [])), 0)
+check("the opt-out graph has no exact-overlap node",
+      len(_ordinary_graph.get("ContinuityH3AnchorBridge", [])), 0)
+
+_settings.anchor_bridge = lambda: True
+_take_latents.resolve = lambda filename: f"/output/{filename}"
+_take_latents.header = lambda path: {
+    "schema": 1, "family": "h3", "frames": 120,
+    "width": 640, "height": 360, "fps": 24.0,
+}
+try:
+    _wrong_canvas = grouped(build(_bridge_blob).expand)
+finally:
+    _settings.anchor_bridge = _was_bridge
+    _take_latents.resolve = _was_resolve
+    _take_latents.header = _was_header
+check("an incompatible sidecar falls back before sampling",
+      len(_wrong_canvas.get("ContinuityTakeLatent", [])), 0)
+check("the frame fallback emits no exact-overlap node",
+      len(_wrong_canvas.get("ContinuityH3AnchorBridge", [])), 0)
+
 # The takes, written by the passes themselves: one `ContinuityTake` per
 # generated pass, off the reel node's pass output, carrying the card's number
 # and the seed it ran on — and nothing for the kept take, which is already the
@@ -1428,7 +1514,8 @@ with tempfile.TemporaryDirectory() as _out:
     check("only the generated passes are written",
           [take["segment"] for take in written], [1, 4])
     check("...into the takes shelf",
-          {take["subfolder"] for take in written}, {"minimax/renders/takes"})
+          {take["subfolder"] for take in written},
+          {os.path.normpath("minimax/renders/takes")})
     check("...named for the card each one is",
           [take["filename"].endswith(f"_s{take['segment']:02}.mp4") for take in written],
           [True, True])

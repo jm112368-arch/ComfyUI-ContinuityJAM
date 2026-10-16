@@ -245,6 +245,15 @@ class Family:
     # the cache keys — it had.
     hands_latents = False
 
+    # Whether compatible held takes can anchor both ends of a newly sampled
+    # pass, and the family-specific post-sampler operation that restores their
+    # exact overlap tokens. The generic loop owns when anchors exist; the
+    # temporal latent layout belongs to the family.
+    anchors_latents = False
+
+    def emit_anchor_bridge(self, graph, latent, compiled, seams):
+        return latent
+
     # Whether `emit_finish` is written for this family: a pass over every
     # written pass on the reel, at the size it was written, before ReDetail and
     # the DLSS refiner. H3's guide-LoRA pass. `finish_request` reads the piece's

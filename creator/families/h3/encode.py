@@ -79,6 +79,7 @@ PREV_AUDIO = "__prev_audio__"
 # read out of a file the timeline holds, not out of anything the user attached
 # to this shot, so they have no handle in the user's namespace.
 NEXT_FRAME = "__next__"
+NEXT_LATENT = "__next_latent__"
 NEXT_AUDIO = "__next_audio__"
 
 
@@ -435,6 +436,32 @@ def _context_run(latent, feather, width, height, anchor=None):
     return run
 
 
+def _ending_run(latent, feather, width, height):
+    """The opening run of a following take, fitted for this pass's tail."""
+    video = _video(latent)
+    if tuple(video.shape[-2:]) != (height // 16, width // 16):
+        return None
+    steps = next((s for s in range(1, int(video.shape[2]) + 1)
+                  if _frames_covered(s) == feather), None)
+    return None if steps is None else video[:, :, :steps]
+
+
+def _ending_keyframes(vae, compiled, loaded, head, frame_count):
+    """Pinned tail guides from a take latent, falling back to its frames."""
+    latent = loaded.get(NEXT_LATENT, {}).get("latent")
+    if latent is not None:
+        run = _ending_run(latent, compiled.ends_feather,
+                          compiled.width, compiled.height)
+        if run is not None:
+            return _pinned_run(run, compiled.ends_feather,
+                               frame_count - compiled.ends_feather)
+        logging.info("[MiniMax] bridge: the next take latent does not fit this "
+                     "canvas; encoding its frames")
+    return _context_keyframes(
+        vae, head[:compiled.ends_feather], compiled.ends_feather,
+        at=frame_count - compiled.ends_feather)
+
+
 def _masked_prefix(latent, run):
     """`run` written over the head of the target latent, held by a noise mask.
 
@@ -763,9 +790,7 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
             # it. Those frames are re-generated here and trimmed off the tail
             # before the pass is written out — `MiniMaxH3Reel` — so the clip
             # plays them once.
-            keyframes.extend(_context_keyframes(
-                vae, head[:compiled.ends_feather], compiled.ends_feather,
-                at=frame_count - compiled.ends_feather))
+            keyframes.extend(_ending_keyframes(vae, compiled, loaded, head, frame_count))
         else:
             keyframes.append(_pin({"image": head[:1]}, frame_count - 1, stock=frame_count - 1))
 
@@ -1107,9 +1132,7 @@ def _encode_references(clip, vae, audio_vae, compiled, loaded, checkpoints=None)
         # have no handle and the prompt never cites them.
         head = _resize(loaded[NEXT_FRAME]["image"], compiled.width, compiled.height, "center")
         if compiled.ends_feather > 1:
-            keyframes.extend(_context_keyframes(
-                vae, head[:compiled.ends_feather], compiled.ends_feather,
-                at=frame_count - compiled.ends_feather))
+            keyframes.extend(_ending_keyframes(vae, compiled, loaded, head, frame_count))
         else:
             keyframes.append(_pin({"latent": vae.encode(head[:1])},
                                   frame_count - 1, stock=frame_count - 1))

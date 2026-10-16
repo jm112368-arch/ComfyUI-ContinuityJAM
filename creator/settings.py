@@ -293,6 +293,11 @@ DEFAULTS = {
     # `encode._quantize` runs whether this is on or off, so a hit and a miss
     # send the model the same tensors and this only decides how long the wait is.
     "latent_cache": True,
+    # Experimental two-ended H3 rendering. Generated takes keep their sampler
+    # latent beside the movie; a later pass may use compatible held takes as
+    # latent anchors at either end instead of round-tripping their frames
+    # through the VAE. Off preserves every existing graph and take format.
+    "anchor_bridge": False,
     # How much of ComfyUI's user directory those latents may fill, in
     # gigabytes. Past it the least recently read entries go. 0 keeps the
     # in-session cache and writes nothing to disk, which is the setting for a
@@ -511,6 +516,7 @@ def clean(raw):
             raise ValueError(f"lora_loader must be one of {', '.join(LORA_LOADERS)}")
         clean_settings["lora_loader"] = raw["lora_loader"]
     for flag in ("show_shift_pills", "autoplay_previews", "advanced", "latent_cache",
+                 "anchor_bridge",
                  "lora_skip_metadata"):
         if flag in raw and raw[flag] is not None:
             if not isinstance(raw[flag], bool):
@@ -953,6 +959,11 @@ def turbo_lead_in():
 def seam_handoff():
     """What a blended seam hands the next shot: one of `SEAM_HANDOFFS`."""
     return load()["seam_handoff"]
+
+
+def anchor_bridge():
+    """Whether compatible held H3 takes may anchor both ends of a new pass."""
+    return bool(load()["anchor_bridge"])
 
 
 def lora_loader():

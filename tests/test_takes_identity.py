@@ -20,6 +20,7 @@ Skips itself if node is not installed.
 """
 
 import json
+from pathlib import Path
 
 import layout
 
@@ -27,7 +28,7 @@ layout.skip_without_node()
 
 from harness import check, passed  # noqa: E402
 
-MIRROR = layout.js("state.js")
+MIRROR = Path(layout.js("state.js")).resolve().as_uri()
 
 SCRIPT = r"""
 const s = await import(process.argv[1]);
@@ -40,6 +41,7 @@ const strip = () => s.parseTimeline(JSON.stringify({
   })),
 }));
 const report = (n) => ({ segment: n, filename: "s" + n + ".mp4", subfolder: "takes",
+                         latent_filename: "s" + n + ".latent.safetensors",
                          duration_s: 5, width: 1280, height: 720, has_audio: true });
 const takes = (t) => t.segments.map((seg) => seg.take?.filename?.match(/s\d/)?.[0] ?? null);
 const out = {};
@@ -70,6 +72,8 @@ const out = {};
   const rebuilt = s.parseTimeline(s.serializeTimeline(t));
   s.attachTakes(rebuilt, [report(1), report(2), report(3)], queued);
   out.rebuilt = takes(rebuilt);
+  out.sidecars = s.parseTimeline(s.serializeTimeline(rebuilt)).segments
+    .map((seg) => seg.take?.latent_filename ?? null);
   const edited = s.parseTimeline(s.serializeTimeline(t));
   edited.segments[1].prompt = "shot b, rewritten";
   s.attachTakes(edited, [report(1), report(2), report(3)], queued);
@@ -118,6 +122,10 @@ check("a removed card's take goes to nobody",
       got["removed"], {"takes": ["s2", "s3"], "prompts": ["shot b", "shot c"],
                        "landed": True})
 check("a rebuilt strip keeps its identities", got["rebuilt"], ["s1", "s2", "s3"])
+check("take latent sidecars survive report, save and reload", got["sidecars"],
+      ["takes/s1.latent.safetensors [output]",
+       "takes/s2.latent.safetensors [output]",
+       "takes/s3.latent.safetensors [output]"])
 check("...and an edited card keeps its own take", got["edited"], ["s1", "s2", "s3"])
 check("...but that take is marked stale", got["editedMarks"], [1])
 check("no snapshot is the old behaviour", got["bare"], [None, "s2", None])
